@@ -94,9 +94,18 @@ Phase 4: 平仓离场 → 止盈/止损/超时强制平仓
 okx-agent-trade-kit/
 ├── SKILL.md                   # 完整策略文档（含 Phase 0~4 执行流程）
 ├── README.md                  # 本文件
+├── docs/
+│   └── backtest_report_v1.1.md   # 回测报告（CRCL/USDT-SWAP 14天，v1.1）
 └── scripts/
     └── backtest_rsi_swap.py   # 回测脚本（直接调 OKX API）
 ```
+
+## 回测报告
+
+详细回测结果见 [docs/backtest_report_v1.1.md](docs/backtest_report_v1.1.md)，包含：
+- 三种策略参数对比（激进/保守/精准激进）
+- 4 笔交易明细
+- SKILL P0/P1 改进清单（含具体代码实现）
 
 ### 运行回测
 

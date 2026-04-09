@@ -573,43 +573,205 @@ RSI(14):    {rsi_value}  🔴 超卖
 
 > ⚠️ 回测结果不代表未来收益。CRCL 在回测期间有剧烈波动（84.4→101.87），策略抓住了所有超卖反弹。真实市场可能存在更多假信号。
 
-### CRCL/USDT-SWAP 回测发现的问题与 SKILL 改进
+### P0 — 必须修复（影响核心功能）
 
-#### P0 — 必须修复
+---
 
-1. **`indicator` CLI 不支持自定义 bar/limit 参数**
-   - `okx market indicator rsi CRCL-USDT-SWAP --bar 1Hutc --limit 336` → HTTP 400
-   - OKX indicator 接口不支持 bar 参数，只能用 `candles` 接口拉原始 K 线后在 Python 中自行计算 RSI
-   - **改进**：SKILL.md 中明确说明 RSI 计算需要用 Python 实现，indicator CLI 仅用于快速查询
+**P0-1：`indicator` CLI 不支持自定义 bar/limit → 策略无法做技术分析**
 
-2. **candles 和 indicator 的 bar 格式不一致**
-   - `candles`: `--bar 1H`（大写 H）
-   - `indicator`: `--bar 1Hutc`（UTC 后缀）
-   - **改进**：SKILL.md 中增加格式对照表
+**问题**：
+```bash
+okx market indicator rsi CRCL-USDT-SWAP --bar 1Hutc --limit 336
+# → HTTP 400 Bad Request
+```
+OKX `/api/v5/index/ticker`（indicator CLI 调用的后端）不支持 `bar`/`limit` 参数，只能查默认粒度的最新值，无法做历史 RSI 计算。
 
-3. **小币 instId 查询方法缺失**
-   - `okx market instruments --instType SWAP` 无法按 quoteCcy 过滤
-   - **改进**：补充用 `okx market ticker <instId>` 逐一验证的方法
+**已验证的正确方案 — 直接调 OKX API + Python 计算 RSI**：
 
-#### P1 — 建议增强
+```python
+import urllib.request, json, math
 
-4. **资金费率未入策略逻辑**
-   - CRCL 资金费率约 0.03%~0.06%/8h，8x 杠杆持仓 2 天资金费率可抵消 ~0.5% 收益
-   - **改进**：Phase 1 增加资金费率检查逻辑，费率 > 0.05% 时降低仓位或强制平仓
+BASE_URL = "https://www.okx.com"
 
-5. **爆仓价预警缺失**
-   - CRCL 波动范围 84.4~101.87（17.5%），远超 8x 爆仓线（12.5%）
-   - **改进**：Phase 0 增加强平价计算，距强平价 < 5% 时预警
+def fetch_candles(inst_id: str, bar: str = "1H", limit: int = 336) -> list:
+    """拉 K 线数据（public endpoint，无需签名）"""
+    url = f"{BASE_URL}/api/v5/market/candles?instId={inst_id}&bar={bar}&limit={limit}"
+    with urllib.request.urlopen(url, timeout=15) as r:
+        data = json.loads(r.read())["data"]
+    # OKX K线字段: [ts, open, high, low, close, vol, volCcy, volQuote, confirm]
+    candles = []
+    for row in reversed(data):
+        candles.append({
+            "ts": int(row[0]),
+            "open": float(row[1]),
+            "high": float(row[2]),
+            "low": float(row[3]),
+            "close": float(row[4]),
+        })
+    return candles
 
-6. **回测模板缺失**
-   - **改进**：补充 `scripts/backtest_rsi_swap.py` 示例脚本（已添加到 scripts/ 目录）
+def calc_rsi(candles: list, period: int = 14) -> float:
+    """计算 RSI（基于 close 价格）"""
+    closes = [c["close"] for c in candles]
+    gains, losses = [], []
+    for i in range(1, len(closes)):
+        delta = closes[i] - closes[i-1]
+        gains.append(max(delta, 0))
+        losses.append(max(-delta, 0))
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
 
-#### P2 — 体验优化
+candles = fetch_candles("CRCL-USDT-SWAP", bar="1H", limit=336)
+rsi = calc_rsi(candles, period=14)
+print(f"RSI(14) = {rsi:.2f}")
+```
 
-7. 多币种并行监控（与「博尔特冲刺」skill 对齐）
-8. 飞书通知增加：RSI值、距爆仓价幅度、资金费率、浮盈/浮亏
-9. 追踪止损：当浮盈 > 5% 时将止损线上调至成本价
-10. `--mode demo|live` 明确区分
+**SKILL 改进**：`indicator` CLI 仅作为**当前值快速查询**使用（`--limit 1`），历史 RSI 计算必须用 Python 脚本。文档中明确标注此限制。
+
+---
+
+**P0-2：`candles` 和 `indicator` 的 bar 格式不一致，导致使用混淆**
+
+**问题**：
+
+| CLI 命令 | 正确 bar 格式 | 错误格式 |
+|---------|------------|---------|
+| `okx market candles` | `--bar 1H`（大写 H） | `--bar 1Hutc` → 报错 |
+| `okx market indicator` | `--bar 1Hutc`（必须 UTC 后缀） | `--bar 1H` → 可能返回错误数据 |
+| `okx market funding-rate` | `--bar 8H`（永续合约固定 8H） | 其他值无效 |
+
+**SKILL 改进**：文档增加格式对照表，并在各命令示例中标注正确格式。Rule of thumb：
+- `candles` → 大写 H，如 `1H`, `4H`, `1D`
+- `indicator` → 必须加 `utc` 后缀，如 `1Hutc`, `4Hutc`, `1Dutc`
+
+---
+
+**P0-3：小币 instId 无法按 quoteCcy 过滤 → 不知道该监控哪些币**
+
+**问题**：`okx market instruments --instType SWAP` 返回全量合约列表，无法按 `quoteCcy = USDT` 过滤，只能手动翻找。
+
+**已验证的正确方案**：
+
+```python
+import urllib.request, json
+
+# 拉全量永续合约列表（仅取 instId）
+url = "https://www.okx.com/api/v5/public/instruments?instType=SWAP"
+with urllib.request.urlopen(url, timeout=15) as r:
+    data = json.loads(r.read())["data"]
+
+usdt_swaps = [row["instId"] for row in data if row.get("quoteCcy") == "USDT"]
+print(f"USDT 永续合约共 {len(usdt_swaps)} 个")
+
+# 逐一验证 ticker 是否存在（有成交）
+for inst_id in usdt_swaps:
+    ticker_url = f"https://www.okx.com/api/v5/market/ticker?instId={inst_id}"
+    try:
+        with urllib.request.urlopen(ticker_url, timeout=5) as tr:
+            t = json.loads(tr.read())["data"][0]
+            last = float(t["last"])
+            vol24h = float(t["vol24h"])
+            if vol24h > 1000:  # 过滤日成交量 > 1000 USDT 的币种
+                print(f"✅ {inst_id} | 现价: {last} | 24h成交量: {vol24h}")
+    except Exception:
+        print(f"❌ {inst_id} 无有效行情")
+```
+
+**SKILL 改进**：补充 Python 脚本方法，按成交量过滤活跃 USDT 合约，供监控前筛选候选币种。
+
+---
+
+#### P1 — 建议增强（提升策略健壮性）
+
+---
+
+**P1-4：资金费率未入策略逻辑 → 高费率币种持仓成本被低估**
+
+**问题**：CRCL 资金费率 0.03%~0.06%/8h（每天 3 次结算），8x 杠杆持仓 2 天资金费率 ≈ 0.5%，持仓 7 天 ≈ 1.75%，可能侵蚀止盈收益。
+
+**改进方案 — Phase 1 增加资金费率检查**：
+
+```python
+def fetch_funding_rate(inst_id: str) -> float:
+    """获取当前资金费率（public endpoint）"""
+    url = f"https://www.okx.com/api/v5/public/funding-rate-history?instId={inst_id}&limit=1"
+    with urllib.request.urlopen(url, timeout=10) as r:
+        data = json.loads(r.read())["data"]
+    return float(data[0]["fundingRate"]) if data else 0.0
+
+# 在 Phase 1 信号确认后、检查开仓前执行：
+fr = fetch_funding_rate(inst_id)
+hourly_cost = fr / 3  # 8h 结算一次，折算为 hourly
+daily_cost_pct = hourly_cost * 24
+print(f"当前资金费率: {fr*100:.4f}%/8h | 日资金成本: {daily_cost_pct*100:.4f}%")
+
+# 资金费率阈值：日成本 > 0.1% 时降低仓位 50%
+if daily_cost_pct > 0.001:
+    actual_position_pct = position_pct * 0.5
+    print(f"⚠️ 高资金费率，自动降低仓位至 {actual_position_pct*100:.0f}%")
+```
+
+**SKILL 改进**：在 Phase 1 信号确认步骤中增加资金费率检查，当日均资金费率 > 0.1% 时自动减仓。
+
+---
+
+**P1-5：爆仓价预警缺失 → 极端行情下无法提前风控**
+
+**问题**：CRCL 波动 17.5%，远超 8x 爆仓线（12.5%），策略在波动峰值开仓有直接爆仓风险，但 Phase 0/1 无任何预警。
+
+**改进方案 — 开仓前计算距强平价距离**：
+
+```python
+def calc_liquidation_price(entry_price: float, leverage: int, side: str = "long") -> float:
+    """计算强平价（USDT 本位 / 逐仓 / 做多）"""
+    # OKX USDT 本位逐仓强平价公式：
+    # long: entry_price * (1 - 1/leverage)
+    # short: entry_price * (1 + 1/leverage)
+    if side == "long":
+        return entry_price * (1 - 1 / leverage)
+    else:
+        return entry_price * (1 + 1 / leverage)
+
+def check_liquidation_distance(entry_price: float, leverage: int, current_price: float) -> dict:
+    liq_price = calc_liquidation_price(entry_price, leverage)
+    if current_price < liq_price:
+        pct_to_liq = 0
+    else:
+        pct_to_liq = (current_price - liq_price) / current_price * 100
+    return {"liq_price": liq_price, "pct_to_liq": pct_to_liq}
+
+# 在 Phase 2 开仓前执行：
+check = check_liquidation_distance(entry_price=86.65, leverage=8, current_price=87.10)
+print(f"强平价: {check['liq_price']:.4f} | 距强平价: {check['pct_to_liq']:.2f}%")
+
+# 预警规则：距强平价 < 5% → 拒绝开仓
+if check["pct_to_liq"] < 5:
+    print("🚨 距强平价不足 5%，拒绝开仓！")
+    # → 放弃本次交易，等待价格回归安全区间
+elif check["pct_to_liq"] < 10:
+    print("⚠️ 距强平价 < 10%，建议降低仓位")
+```
+
+**SKILL 改进**：Phase 2 开仓前增加强平价计算，距强平价 < 5% 时拒绝开仓，< 10% 时降低仓位。已在 `scripts/backtest_rsi_swap.py` 中实现示例。
+
+---
+
+**P1-6：回测模板缺失 → 策略参数无法量化验证**
+
+**状态**：✅ 已解决。`scripts/backtest_rsi_swap.py` 已添加，支持多策略参数并行回测。
+
+---
+
+#### P2 — 体验优化（nice to have）
+
+- 多币种并行监控（与「博尔特冲刺」skill 对齐）
+- 飞书通知增强：RSI值、距爆仓价幅度、资金费率、浮盈/浮亏
+- 追踪止损：当浮盈 > 5% 时将止损线上调至成本价
+- `--mode demo|live` 明确区分
 
 ---
 
