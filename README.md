@@ -34,7 +34,7 @@
 
 ### 使用方法
 
-在支持 WorkBuddy / CodeBuddy 的 AI 助手中，直接描述你的需求即可触发本 Skill：
+在支持 OpenClaw等 的 AI 助手中，直接描述你的需求即可触发本 Skill：
 
 ```
 "okx激进抄底 ETH 永续 止盈8%止损5% 杠杆8x 仓位50%"
