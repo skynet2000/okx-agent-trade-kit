@@ -139,18 +139,15 @@ okx-agent-trade-kit/
 │   ├── orderflow.md                # 订单流分析参考
 │   ├── three-pillars.md            # 三支柱评分框架
 │   ├── trading.md                  # 交易计划参考
-│   ├── kline_chart.py              # K 线图表生成
-│   ├── kline_ext_indicators.py     # 扩展指标计算（130+ 因子）
-│   └── kline_orderflow.py          # 订单流与深度分析
-│       references/
-│       ├── indicators.md
-│       ├── orderflow.md
-│       ├── three-pillars.md
-│       └── trading.md
-│       scripts/
-│       ├── kline_chart.py
-│       ├── kline_ext_indicators.py
-│       └── kline_orderflow.py
+│   ├── references/                 # 参考文档
+│   │   ├── indicators.md
+│   │   ├── orderflow.md
+│   │   ├── three-pillars.md
+│   │   └── trading.md
+│   └── scripts/                    # 分析脚本
+│       ├── kline_chart.py          # K 线图表生成
+│       ├── kline_ext_indicators.py # 扩展指标计算（130+ 因子）
+│       └── kline_orderflow.py      # 订单流与深度分析
 ├── docs/
 │   └── backtest_report_v1.1.md     # 回测报告（v1.1）
 └── scripts/
@@ -173,10 +170,99 @@ okx-agent-trade-kit/
 
 ## 版本历史
 
-- **v1.3** — P3 ATR 动态止盈止损：Wilder 平滑 ATR(14)、动态 TP/SL 自适应波动、ATR 安全检查
-- **v1.2** — P2 体验增强：多币种扫描 + 飞书通知 + 追踪止损 + demo/live
-- **v1.1** — P0/P1 修复：indicator CLI 限制 + bar 格式对照 + 资金费率 + 强平价预警
-- **v1.0** — 初始版本：RSI 超卖信号 + Phase 0~4 基础框架
+### v1.3 — P3 ATR 动态止盈止损（2026-04-10）
+
+ATR（Average True Range）驱动的自适应止盈止损系统，替代固定百分比策略。
+
+**新增功能：**
+- Wilder 平滑 ATR(14) 计算，替代简单移动平均
+- 动态 TP/SL：`TP = Entry + tp_atr × ATR(14)`，`SL = Entry - sl_atr × ATR(14)`
+- 每轮交易前自动刷新 ATR 值，适应市场波动变化
+- ATR 安全检查：ATR 过小时拒绝开仓（防止低波动假信号）
+
+**相关脚本：** `run_tracking.py`（ATR 动态止盈止损 + 追踪止损）
+
+**提交：** `ff2b484`
+
+---
+
+### v1.2 — P2 体验增强（2026-04-10）
+
+从单币种手动运行升级为多币种自动化监控 + 实时通知。
+
+**新增功能：**
+- 多币种 RSI+ATR 并行扫描器（`multi_coin_scanner.py`），支持 3~6 个币种同时监控
+- 飞书通知增强（`feishu_notify.py`）：RSI 预警卡片、强平价预警、浮盈/浮亏推送、资金费率提醒
+- 追踪止损：浮盈 > 5% 时自动上调 SL 至成本价，锁定利润
+- `--profile demo/live` 明确区分模拟盘和实盘，全链路参数隔离
+
+**相关脚本：** `multi_coin_scanner.py`、`feishu_notify.py`、`run_tracking.py`
+
+**提交：** `00a9690`
+
+---
+
+### v1.1 — P0/P1 基础修复与回测（2026-04-09）
+
+针对 v1.0 实际运行中发现的问题进行修复，并加入回测验证。
+
+**P0 紧急修复：**
+- OKX `indicator` CLI 调用限制修复（API 返回 403 问题）
+- K 线 bar 格式对照表（确保各交易所格式兼容）
+- `usdt_swaps` 过滤（仅扫描 USDT 永续合约，排除币本位）
+
+**P1 风控增强：**
+- 资金费率（Funding Rate）获取 + 高 FR 降仓逻辑
+- 强平价计算（`calc_liquidation_price`）+ 距强平价过近预警
+- CRCL/USDT-SWAP 14 天回测（2026-03-28 ~ 2026-04-09，初始 1000 USDT）
+- 独立回测报告文件 `docs/backtest_report_v1.1.md`
+
+**回测结果：** 激进策略 (8x) 4 笔交易 75% 胜率 +465%
+
+**相关脚本：** `backtest_rsi_swap.py`
+
+**提交：** `d3b4059`、`ae246cb`
+
+---
+
+### v1.0 — 初始版本（2026-04-09）
+
+项目从零搭建，实现 RSI 超卖信号自动抄底的核心框架。
+
+**核心功能：**
+- Phase 0~4 完整交易生命周期（启动检查 → RSI 监测 → 执行买入 → 持仓监控 → 平仓离场）
+- RSI(14) 超卖信号触发市价开多
+- 固定百分比止盈/止损（`+8%` / `-5%`）
+- 5x~8x 可调杠杆，逐仓模式
+- 现货（spot）/ 永续合约（swap）双模式
+- 基础持仓监控与平仓逻辑
+
+**提交：** `394828f`
+
+---
+
+### 安全修复（2026-04-10）
+
+移除脚本中硬编码的 API 密钥，改为环境变量读取。
+
+- `auto_scan_trade.py`：硬编码 → `os.environ.get("OKX_API_KEY", "")`
+- `auto_scan_trade.ps1`：硬编码 → `$env:OKX_API_KEY` 环境变量
+- 启动时检查环境变量是否设置，未设置则退出并提示
+
+**提交：** `16fca3b`
+
+---
+
+### 文档更新（2026-04-10）
+
+README 增加 `kline-indicator` 技术分析引擎和 `auto_scan_trade` 脚本描述。
+
+**新增内容：**
+- 技术分析引擎功能概述（三支柱评分、130+ 因子、订单流等）
+- 技术分析引擎使用模式表（quick/full/scan/chart/orderflow/macro）
+- 更新文件结构，补充 `kline-indicator/` 和 `auto_scan_trade` 脚本
+
+**提交：** `b73b0dd`
 
 ## License
 
