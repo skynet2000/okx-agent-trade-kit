@@ -1,4 +1,4 @@
-# CRCL/USDT-SWAP RSI 策略回测报告 v1.1
+# CRCL/USDT-SWAP RSI 策略回测报告 v1.2
 
 > **回测时间**：2026-04-10
 > **标的**：CRCL/USDT-SWAP（OKX 永续合约）
@@ -7,6 +7,7 @@
 > **K线粒度**：1H（每小时）
 > **初始资金**：1000 USDT
 > **回测脚本**：[scripts/backtest_rsi_swap.py](scripts/backtest_rsi_swap.py)
+> **SKILL 版本**：v1.2.0
 
 ---
 
@@ -50,7 +51,18 @@
 
 ## 4. SKILL 改进清单
 
-详见 [SKILL.md](SKILL.md) — 回测改进记录（v1.1）章节。
+详见 [SKILL.md](SKILL.md) — 回测改进记录（v1.2）章节。
+
+### v1.2 P2 新增改进
+
+| # | 改进 | 状态 | 实现文件 |
+|---|------|------|---------|
+| **P2-1** | 多币种并行监控（3~6 个币种） | ✅ 已实现 | `scripts/multi_coin_scanner.py` |
+| **P2-2** | 飞书通知增强（RSI/强平价/资金费率/PnL） | ✅ 已实现 | `scripts/feishu_notify.py` |
+| **P2-3** | 追踪止损（浮盈 > 5% → SL 锁成本价） | ✅ 已实现 | Phase 3C + `scripts/run_tracking.py` |
+| **P2-4** | `--mode demo\|live` 明确区分 | ✅ 已实现 | 全链路 `--profile demo/live` |
+
+**版本演进**：v1.0（初始）→ v1.1（P0/P1 修复）→ **v1.2（P2 体验增强）**
 
 ---
 

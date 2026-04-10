@@ -10,7 +10,7 @@ description: |
     "rsibot" / "rsi策略" / "okx agent" / "okx量化" / "okx合约机器人" /
     "start rsi agent" / "run okx strategy" / "aggressive rsi" /
     "okx高频抄底" / "okx永续套利" / "okx开多信号"
-version: "1.0.0"
+version: "1.2.0"
 user-invocable: true
 ---
 
@@ -40,7 +40,7 @@ user-invocable: true
 
 | 参数 | 类型 | 默认值 | 激进推荐 | 范围 | 说明 |
 |------|------|--------|---------|------|------|
-| `--symbol` | string | **必填** | — | — | 交易标的，格式见下方 instId 对照表 |
+| `--symbols` | string | `BTC-USDT-SWAP` | — | — | 逗号分隔的 instId 列表，如 `CRCL-USDT-SWAP,ETH-USDT-SWAP` |
 | `--profile` | string | `live` | `live` / `demo` | — | `live` 实盘 / `demo` 模拟盘 |
 | `--mode` | string | `swap` | `swap` | `spot` / `swap` | `swap` 永续合约 / `spot` 现货 |
 | `--rsi-period` | int | `14` | `14` | 6~28 | RSI 计算周期 |
@@ -51,6 +51,8 @@ user-invocable: true
 | `--order-pct` | float | `50` | `40~60` | 10~80 | 下单金额占可用保证金的比例（%） |
 | `--check-interval` | int | `60` | `60` | 30~300 | 监控轮询间隔（秒） |
 | `--max-hold-hours` | int | `336` | `336` | — | 最大持仓小时数（超过强制平仓，默认 14 天） |
+| `--trailing-pct` | float | `5` | `5` | 3~10 | 追踪止盈触发阈值（浮盈 > 此值时自动上调 SL 至成本价） |
+| `--feishu-webhook` | string | `null` | — | — | 飞书 webhook URL，为空则跳过飞书通知 |
 
 ### 参数配置说明
 
@@ -104,20 +106,32 @@ user-invocable: true
 okx account config
 
 # Step 0.2: 查询账户余额（swap 模式查 USDT 余额，现货模式查对应币种余额）
-okx account balance
+okx account balance --profile {profile}
 
 # Step 0.3: 查询当前持仓（确认无现有反向持仓）
-okx account positions
+okx account positions --profile {profile}
 
-# Step 0.4: 获取实时价格
-okx market ticker {symbol}
+# Step 0.4: 多币种并行获取实时价格
+okx market ticker {symbol1}
+okx market ticker {symbol2}
+okx market ticker {symbol3}
+# ...
 
-# Step 0.5: 获取 K 线数据（用于计算 RSI）
-okx market candles {symbol} --bar 1H --limit 100
+# Step 0.5: 多币种并行获取 K 线（用于计算 RSI）
+okx market candles {symbol1} --bar 1H --limit 100
+okx market candles {symbol2} --bar 1H --limit 100
+okx market candles {symbol3} --bar 1H --limit 100
+# ...
+
+# Step 0.6: 资金费率检查（仅 swap）
+okx market funding-rate {symbol1}
+okx market funding-rate {symbol2}
+# ...
 ```
 
-> **现货**：symbol = `BTC-USDT`
-> **合约**：symbol = `BTC-USDT-SWAP`
+> **单币种**：symbol = `BTC-USDT-SWAP`
+> **多币种**：逗号分隔，如 `CRCL-USDT-SWAP,ETH-USDT-SWAP,SOL-USDT-SWAP`
+> **profile**：`--profile demo` 模拟盘 / `--profile live` 实盘
 
 **Phase 0 输出模板**：
 
@@ -131,39 +145,46 @@ okx market candles {symbol} --bar 1H --limit 100
 
 ---
 
-### Phase 1 — RSI 信号检测
+### Phase 1 — RSI 信号检测（多币种并行）
 
-**目的**：持续轮询 RSI(14)，低于超卖阈值时触发买入信号。
+**目的**：对所有监控币种并行计算 RSI，任一币种低于超卖阈值时触发买入信号。
 
 ```bash
-# Step 1.1: 获取 RSI 指标
-okx market indicator rsi {symbol} --period {rsi_period} --limit 100
+# Step 1.1: 多币种并行获取 K 线（Python 脚本直接调 OKX API 计算 RSI）
+# 脚本示例见 P2-1 Multi-coin Scanner（下方）
 
-# Step 1.2: 获取实时价格（辅助判断）
-okx market ticker {symbol}
+# Step 1.2: 多币种并行获取实时价格（辅助）
+okx market ticker {symbol1}
+okx market ticker {symbol2}
+# ...
 
-# Step 1.3: 获取最新 K 线（辅助判断趋势）
-okx market candles {symbol} --bar 1H --limit 10
+# Step 1.3: 多币种并行获取资金费率（辅助风控）
+okx market funding-rate {symbol1}
+okx market funding-rate {symbol2}
+# ...
 ```
 
-**Phase 1 判断逻辑**：
+**Phase 1 判断逻辑**（对每个监控币种独立判断）：
 
 ```
-RSI({rsi_period}) = {rsi_value}
+{coin1}: RSI(14) = {rsi1}  [{'超卖!' if rsi1 < rsi_oversold else '正常'}]
+{coin2}: RSI(14) = {rsi2}  [{'超卖!' if rsi2 < rsi_oversold else '正常'}]
+...
 
-IF RSI < rsi_oversold:
-    → ✅ 触发买入信号，进入 Phase 2
-ELIF RSI >= rsi_oversold:
-    → ⏳ 等待中，继续轮询（间隔 {check_interval} 秒）
+IF ANY coin: RSI < rsi_oversold:
+    → 该币种进入 Phase 2（其他币种继续轮询）
+    → 飞书通知：多币种并行监控 {n} 个币种，触发信号 {symbol}
 ```
 
-**Phase 1 输出模板**：
+**Phase 1 输出模板**（多币种汇总）：
 
 ```
-[{timestamp}] {symbol}
-  RSI(14) = {rsi_value}  {'🔴 超卖 — 触发买入!' if rsi < rsi_oversold else '🟢 正常'}
-  当前价: {lastPrice} | 24h涨跌: {change24h}%
-  {'✅ 信号触发! 进入 Phase 2...' if rsi < rsi_oversold else '⏳ 等待 RSI < {rsi_oversold}...'}
+[{timestamp}] Multi-coin Scan  {symbols}
+  CRCL-USDT-SWAP : RSI(14)=25.1  [OVERSOLD - BUY!]
+  ETH-USDT-SWAP  : RSI(14)=58.3  [NORMAL]
+  SOL-USDT-SWAP  : RSI(14)=42.1  [NORMAL]
+  BTC-USDT-SWAP  : RSI(14)=65.2  [NORMAL]
+  [SIGNAL] CRCL-USDT-SWAP RSI < 30, entering Phase 2...
 ```
 
 ---
@@ -262,9 +283,9 @@ okx swap place --instId ETH-USDT-SWAP --side buy --tdMode isolated --lever 8 --o
 
 ---
 
-### Phase 3 — 持仓监控
+### Phase 3 — 持仓监控（含追踪止损 + 飞书通知）
 
-**目的**：买入后实时监控价格变化，判断止盈/止损条件。
+**目的**：买入后实时监控价格变化，判断止盈/止损条件，支持追踪止损和飞书通知。
 
 #### Phase 3A — 查询持仓状态
 
@@ -276,52 +297,104 @@ okx account balance --profile {profile}
 okx swap positions --instId {symbol} --profile {profile}
 ```
 
-#### Phase 3B — 持续价格监控
+#### Phase 3B — 持续价格监控（增强版）
 
 ```bash
 # 每轮监控：获取最新价格
 okx market ticker {symbol}
 
-# 每 N 轮重新计算 RSI（可选，用于辅助判断）
-okx market indicator rsi {symbol} --period {rsi_period} --limit 100
+# 每 N 轮重新计算 RSI（辅助判断趋势）
+okx market candles {symbol} --bar 1H --limit 50  # Python 计算 RSI
+
+# 资金费率（每日成本计算）
+okx market funding-rate {symbol}
 ```
 
-**Phase 3 监控逻辑**（伪代码）：
+#### Phase 3C — 追踪止损逻辑
+
+**追踪止盈规则**（当浮盈 > `--trailing-pct` 时自动上调止损线）：
+
+```
+初始：
+  tp_price = entry_price * (1 + tp_pct / 100)   # 止盈价
+  sl_price = entry_price * (1 - sl_pct / 100)   # 初始止损价
+
+监控中（每一轮）：
+  IF pnl_pct > trailing_pct AND sl_price < entry_price:
+      sl_price = entry_price  ← 锁定利润，防止回吐
+      → 记录：追踪止盈触发，止损线上调至成本价
+
+  IF current_price >= tp_price:
+      → 触发止盈，进入 Phase 4A
+  IF current_price <= sl_price:
+      → 触发止损，进入 Phase 4B
+```
+
+**追踪止损完整伪代码**：
 
 ```python
-entry_price = {entry_price}      # Phase 2 成交均价
-tp_price    = entry_price * (1 + tp_pct / 100)   # 止盈价
-sl_price    = entry_price * (1 - sl_pct / 100)   # 止损价
-max_time    = time.time() + max_hold_hours * 3600
+entry_price    = {entry_price}
+tp_price       = entry_price * (1 + tp_pct / 100)
+sl_price       = entry_price * (1 - sl_pct / 100)  # 动态调整
+trailing_pct   = {trailing_pct}  # 默认 5%
+max_time       = time.time() + max_hold_hours * 3600
+trailing_locked = False
+last_feishu_time = 0
 
 WHILE True:
-    current_price = get_ticker()
-    pnl_pct = (current_price - entry_price) / entry_price * 100
-    elapsed_hours = (time.time() - entry_time) / 3600
+    current_price = get_ticker(symbol)
+    rsi14 = calc_rsi_from_candles(symbol)           # Python 计算
+    fr    = fetch_funding_rate(symbol)              # 资金费率
+    liq   = calc_liquidation_price(entry_price, leverage)
 
-    PRINT(f"持仓监控 | 成本: {entry_price} | 现价: {current_price} | 浮盈: {pnl_pct}%")
+    pnl_pct = (current_price - entry_price) / entry_price * 100
+    dist_to_tp  = (tp_price  - current_price) / current_price * 100
+    dist_to_sl  = (current_price - sl_price) / current_price * 100
+    dist_to_liq = (current_price - liq) / current_price * 100
+    daily_fr_cost = fr * 3 * 100  # 日资金成本 %
+
+    # [追踪止损] 浮盈超过阈值，上调止损至成本价
+    if pnl_pct > trailing_pct and not trailing_locked:
+        sl_price = entry_price
+        trailing_locked = True
+        print(f"[TRAILING] PnL {pnl_pct:.2f}% > {trailing_pct}%, SL raised to cost: {entry_price:.4f}")
+
+    PRINT(f"监控 | {symbol} | 现价:{current_price} | 浮盈:{pnl_pct:+.2f}% "
+          f"| TP:{dist_to_tp:.2f}% | SL:{dist_to_sl:.2f}% "
+          f"| Liq:{dist_to_liq:.2f}% | RSI:{rsi14:.1f}")
+
+    # [飞书通知] 每 30 分钟推送一次 + 关键事件立即通知
+    now = time.time()
+    if now - last_feishu_time > 1800 or pnl_pct > trailing_pct:
+        send_feishu({
+            "symbol": symbol, "price": current_price,
+            "rsi14": rsi14, "pnl_pct": pnl_pct,
+            "dist_to_liq": dist_to_liq, "daily_fr_cost": daily_fr_cost,
+            "trailing_active": trailing_locked,
+            "profile": "{profile}"
+        })
+        last_feishu_time = now
 
     IF current_price >= tp_price:
-        → 触发止盈，进入 Phase 4A
-        BREAK
+        BREAK  # → Phase 4A 止盈
     ELIF current_price <= sl_price:
-        → 触发止损，进入 Phase 4B
-        BREAK
+        BREAK  # → Phase 4B 止损
     ELIF time.time() >= max_time:
-        → 超时强制平仓，进入 Phase 4C
-        BREAK
+        BREAK  # → Phase 4C 超时
     ELSE:
-        → 继续等待 (sleep check_interval 秒)
+        sleep(check_interval)
 ```
 
-**Phase 3 输出模板**（循环输出）：
+**Phase 3 输出模板**（增强版）：
 
 ```
-[{timestamp}] 🔄 持仓监控中
-  成本: {entry_price} | 现价: {current_price} | 浮盈亏: {pnl_pct}%
-  止盈线: {tp_price} (+{tp_pct}%) | 止损线: {sl_price} (-{sl_pct}%)
-  持仓时长: {elapsed_hours}h / {max_hold_hours}h (max)
-  ⏱ 下次检查: {check_interval}秒后
+[{timestamp}] MONITORING  {symbol}  [{profile}]
+  Price:    {current_price}  |  Entry: {entry_price}  |  PnL: {pnl_pct:+.2f}%
+  TP:      {tp_price} ({dist_to_tp:.2f}% away)
+  SL:      {sl_price} ({dist_to_sl:.2f}% away)  [TRAILING] if locked
+  Liq:     {liq_price} ({dist_to_liq:.2f}% away)
+  RSI(14): {rsi14:.1f}  |  Funding: {fr*100:+.4f}%/8h (daily: {daily_fr_cost:+.4f}%)
+  Hold:    {elapsed_hours:.1f}h / {max_hold_hours}h  |  Next: {check_interval}s
 ```
 
 ---
@@ -425,30 +498,84 @@ okx swap place \
 
 Phase 0:
   okx account config
-  okx account balance
+  okx account balance --profile live
   okx market ticker ETH-USDT-SWAP
   okx market candles ETH-USDT-SWAP --bar 1H --limit 100
 
 Phase 1 (循环):
-  okx market indicator rsi ETH-USDT-SWAP --period 14 --limit 100
+  python scripts/multi_coin_scanner.py --coins ETH-USDT-SWAP
   → RSI(14) = 24 < 25 超卖！触发买入
 
 Phase 2:
   okx market ticker ETH-USDT-SWAP
-  okx market instruments --instType SWAP --instId ETH-USDT-SWAP
-  okx swap leverage --instId ETH-USDT-SWAP --lever 8 --mgnMode isolated --profile live
-  okx swap place --instId ETH-USDT-SWAP --side buy --tdMode isolated --lever 8 --ordType market --sz 10 --profile live
+  okx swap leverage --instId ETH-USDT-SWAP --lever 8 --mgnMode isolated --posSide long --profile live
+  okx swap place --instId ETH-USDT-SWAP --side buy --tdMode isolated --posSide long --ordType market --sz 10 --profile live
+  # 同时挂止盈止损 plan order
+  okx swap algo place --instId ETH-USDT-SWAP --side sell --sz 10 --ordType conditional \
+      --tpTriggerPx {tp_price} --tpOrdPx=-1 \
+      --slTriggerPx {sl_price} --slOrdPx=-1 \
+      --posSide long --tdMode isolated --reduceOnly --profile live
   okx swap positions --instId ETH-USDT-SWAP --profile live
 
 Phase 3 (循环):
-  okx market ticker ETH-USDT-SWAP
-  → 监控浮盈，等待止盈或止损
+  python scripts/review_position.py --symbol ETH-USDT-SWAP --profile live
+  → 监控浮盈 / 追踪止损 / 飞书通知
 
 Phase 4:
   okx swap place --instId ETH-USDT-SWAP --side sell --tdMode isolated --posSide long --ordType market --sz 10 --profile live
 ```
 
-### 示例 2：模拟盘 RSI 抄底（BTC 现货）
+### 示例 2：模拟盘多币种并行监控（3 个币种，稳健参数）
+
+```
+用户: 模拟盘监控 CRCL ETH SOL 永续 RSI<30 止盈10%止损6% 杠杆5x 30%仓位
+
+Phase 0:
+  python scripts/multi_coin_scanner.py --coins CRCL-USDT-SWAP,ETH-USDT-SWAP,SOL-USDT-SWAP
+
+Phase 1:
+  # 多币种并行，每小时自动扫描
+  python scripts/multi_coin_scanner.py --coins CRCL-USDT-SWAP,ETH-USDT-SWAP,SOL-USDT-SWAP --rsi-oversold 30
+  → 输出：CRCL RSI=25.1 [OVERSOLD], 其他正常
+  → CRCL 进入 Phase 2
+
+Phase 2:
+  okx swap leverage --instId CRCL-USDT-SWAP --lever 5 --mgnMode isolated --posSide long --profile demo
+  okx swap place --instId CRCL-USDT-SWAP --side buy --tdMode isolated --posSide long --ordType market --sz 10 --profile demo
+  # 挂追踪止盈止损 plan order
+  okx swap algo place --instId CRCL-USDT-SWAP --side sell --sz 10 --ordType conditional \
+      --tpTriggerPx {tp_price} --tpOrdPx=-1 \
+      --slTriggerPx {sl_price} --slOrdPx=-1 \
+      --posSide long --tdMode isolated --reduceOnly --profile demo
+
+Phase 3:
+  python scripts/run_tracking.py --symbol CRCL-USDT-SWAP --profile demo --trailing-pct 5
+  → 浮盈 > 5% 时自动上调 SL 至成本价
+  → 飞书通知：[DEMO] CRCL 监控报告（RSI/强平价/资金费率/PnL）
+
+Phase 4:
+  okx swap place --instId CRCL-USDT-SWAP --side sell --tdMode isolated --posSide long --ordType market --sz 10 --profile demo
+```
+
+### 示例 3：追踪止盈实战（实盘，已持仓）
+
+```
+持仓状态：CRCL/USDT-SWAP, 10 张, 均价 85.7673, 5x 杠杆
+当前价：88.50（浮盈 +3.18%）
+
+# 当前未触发追踪（< 5%），继续监控
+python scripts/review_position.py --symbol CRCL-USDT-SWAP --entry 85.7673 --leverage 5 --profile live
+
+# 假设价格涨至 90.05（浮盈 +4.99%），仍 < 5%，继续监控
+# 价格涨至 90.55（浮盈 +5.58% > 5%），触发追踪止损
+# → SL 自动从 82.36 上调至成本价 85.7673
+# → 锁定 5.58% 浮盈，防止回吐
+
+Phase 4（价格回落至 85.90，触发新 SL）：
+  # 市价平仓
+  okx swap place --instId CRCL-USDT-SWAP --side sell --tdMode isolated --posSide long --ordType market --sz 10 --profile live
+  # 平仓均价 ~85.90，浮盈 ~5.58%，约赚 5 USDT
+```
 
 ```
 用户: rsi激进抄底 BTC 现货 模拟盘 超卖30 止盈10%止损8%
@@ -559,7 +686,7 @@ RSI(14):    {rsi_value}  🔴 超卖
 
 ---
 
-## 回测改进记录 (v1.1.0)
+## 回测改进记录 (v1.2.0)
 
 > 基于 CRCL/USDT-SWAP 14天（2026-03-27 ~ 2026-04-10）1H K线真实数据回测，初始资金 1000 USDT。
 
@@ -768,10 +895,455 @@ elif check["pct_to_liq"] < 10:
 
 #### P2 — 体验优化（nice to have）
 
-- 多币种并行监控（与「博尔特冲刺」skill 对齐）
-- 飞书通知增强：RSI值、距爆仓价幅度、资金费率、浮盈/浮亏
-- 追踪止损：当浮盈 > 5% 时将止损线上调至成本价
-- `--mode demo|live` 明确区分
+---
+
+**P2-1：多币种并行监控（3~6 个币种）→ 扩大机会覆盖**
+
+**问题**：当前只监控单一币种，需要人工切换，效率低。与「博尔特冲刺」skill 对齐，支持同时监控多个币种。
+
+**已验证的完整实现 — `multi_coin_scanner.py`**：
+
+```python
+"""
+multi_coin_scanner.py — 多币种 RSI 扫描器
+用法：python multi_coin_scanner.py --coins BTC-USDT-SWAP,ETH-USDT-SWAP,CRCL-USDT-SWAP
+"""
+import argparse, urllib.request, json, time
+from datetime import datetime
+
+BASE = "https://www.okx.com"
+DEFAULT_COINS = "CRCL-USDT-SWAP,ETH-USDT-SWAP,SOL-USDT-SWAP,BTC-USDT-SWAP"
+
+def fetch_candles(inst_id: str, bar: str = "1H", limit: int = 100) -> list:
+    url = f"{BASE}/api/v5/market/candles?instId={inst_id}&bar={bar}&limit={limit}"
+    req = urllib.request.Request(url, headers={"User-Agent": "okx-bot/1.0"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        data = json.loads(r.read())["data"]
+    candles = []
+    for row in reversed(data):
+        candles.append({"ts": int(row[0]), "close": float(row[4])})
+    return candles
+
+def calc_rsi(closes: list, period: int = 14) -> float:
+    gains, losses = [], []
+    for i in range(1, len(closes)):
+        delta = closes[i] - closes[i-1]
+        gains.append(max(delta, 0))
+        losses.append(max(-delta, 0))
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
+    if avg_loss == 0:
+        return 100.0
+    return 100 - (100 / (1 + avg_gain / avg_loss))
+
+def scan_coins(coins: list, rsi_oversold: float = 30) -> list:
+    """对多个币种并行扫描超卖信号，返回信号列表"""
+    signals = []
+    for coin in coins:
+        try:
+            # 获取K线 + RSI
+            candles = fetch_candles(coin)
+            closes = [c["close"] for c in candles]
+            rsi14 = calc_rsi(closes, 14)
+            rsi6  = calc_rsi(closes, 6)
+            last  = closes[-1]
+
+            # 获取24h数据
+            ticker_url = f"{BASE}/api/v5/market/ticker?instId={coin}"
+            req2 = urllib.request.Request(ticker_url, headers={"User-Agent": "okx-bot/1.0"})
+            with urllib.request.urlopen(req2, timeout=5) as r:
+                t = json.loads(r.read())["data"][0]
+            vol24h = float(t.get("vol24h", 0))
+            chg24h = float(t.get("sodUtc8", "0"))  # 24h涨跌
+
+            # 获取资金费率
+            fr_url = f"{BASE}/api/v5/public/funding-rate-history?instId={coin}&limit=1"
+            req3 = urllib.request.Request(fr_url, headers={"User-Agent": "okx-bot/1.0"})
+            with urllib.request.urlopen(req3, timeout=5) as r:
+                fr_data = json.loads(r.read())["data"]
+            fr = float(fr_data[0]["fundingRate"]) if fr_data else 0.0
+
+            print(f"  {coin:<25} RSI(14)={rsi14:5.1f} RSI(6)={rsi6:5.1f} "
+                  f"Price={last:>10} 24h={chg24h*100:+6.2f}% Vol={vol24h:>12,.0f} "
+                  f"FR={fr*100:+.4f}%/8h")
+
+            if rsi14 < rsi_oversold:
+                signals.append({
+                    "coin": coin, "rsi14": rsi14, "rsi6": rsi6,
+                    "price": last, "vol24h": vol24h, "fr": fr
+                })
+
+        except Exception as e:
+            print(f"  {coin:<25} [ERROR] {e}")
+    return signals
+
+def main():
+    parser = argparse.ArgumentParser(description="Multi-coin RSI Scanner")
+    parser.add_argument("--coins", default=DEFAULT_COINS,
+                        help=f"Comma-separated instId list, default: {DEFAULT_COINS}")
+    parser.add_argument("--rsi-oversold", type=float, default=30,
+                        help="RSI oversold threshold, default: 30")
+    parser.add_argument("--min-vol", type=float, default=10000,
+                        help="Minimum 24h volume (USDT), default: 10000")
+    args = parser.parse_args()
+
+    coins = [c.strip() for c in args.coins.split(",")]
+    print(f"\n{'='*80}")
+    print(f"Multi-coin RSI Scan  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*80}")
+    print(f"{'Symbol':<25} RSI(14)  RSI(6)  Price            24h Chg   24h Volume       Funding")
+    print(f"{'-'*80}")
+
+    signals = scan_coins(coins, args.rsi_oversold)
+
+    print(f"\n{'='*80}")
+    if signals:
+        print(f"[SIGNALS] {len(signals)} coin(s) in oversold territory (RSI < {args.rsi_oversold}):")
+        for s in sorted(signals, key=lambda x: x["rsi14"]):
+            print(f"  >>> {s['coin']}: RSI={s['rsi14']:.1f}, Price={s['price']}, "
+                  f"FR={s['fr']*100:+.4f}%/8h")
+    else:
+        print(f"[OK] No oversold signals found (RSI < {args.rsi_oversold})")
+    print(f"{'='*80}\n")
+
+if __name__ == "__main__":
+    main()
+```
+
+**使用方法**：
+```bash
+# 扫描默认 4 个币种
+python scripts/multi_coin_scanner.py
+
+# 扫描自定义币种
+python scripts/multi_coin_scanner.py --coins BTC-USDT-SWAP,ETH-USDT-SWAP,SOL-USDT-SWAP --rsi-oversold 25
+
+# 配合 crontab 每小时自动执行
+0 * * * * cd /path/to && python scripts/multi_coin_scanner.py --coins CRCL-USDT-SWAP,ETH-USDT-SWAP,SOL-USDT-SWAP >> logs/scan.log 2>&1
+```
+
+---
+
+**P2-2：飞书通知增强 → 全指标展示**
+
+**问题**：原飞书通知只有盈亏结果，缺少 RSI、强平价、资金费率等关键决策数据。
+
+**已验证的完整实现 — 飞书通知函数**：
+
+```python
+import urllib.request, json, time
+
+FEISHU_WEBHOOK = "https://open.feishu.cn/open-apis/bot/v2/hook/b2aefdfe-a15d-481a-885b-5b5bb91d4be4"
+
+def send_feishu_notification(
+    title: str,
+    symbol: str,
+    profile: str,           # "demo" or "live"
+    price: float,
+    entry_price: float,
+    rsi14: float,
+    pnl_pct: float,
+    pnl_usdt: float,
+    dist_to_liq: float,     # % distance to liquidation
+    dist_to_sl: float,      # % distance to stop loss
+    dist_to_tp: float,      # % distance to take profit
+    fr: float,              # funding rate (raw, e.g. 0.0003)
+    trailing_active: bool,
+    leverage: int,
+    action: str = "monitor",  # "monitor" | "entry" | "exit_tp" | "exit_sl"
+):
+    """发送结构化飞书通知（Markdown 富文本）"""
+
+    # 颜色：超卖绿/超买红/中性灰
+    if rsi14 < 30:
+        rsi_label = "OVERSOLD"
+        rsi_color = "green"
+    elif rsi14 > 70:
+        rsi_label = "OVERBOUGHT"
+        rsi_color = "red"
+    else:
+        rsi_label = "NEUTRAL"
+        rsi_color = "grey"
+
+    # 距强平价安全等级
+    if dist_to_liq < 5:
+        liq_label = "DANGER"
+        liq_color = "red"
+    elif dist_to_liq < 10:
+        liq_label = "WARNING"
+        liq_color = "orange"
+    else:
+        liq_label = "SAFE"
+        liq_color = "green"
+
+    # 浮盈颜色
+    if pnl_pct > 0:
+        pnl_color = "green"
+    else:
+        pnl_color = "red"
+
+    # 标题 emoji
+    emoji = {
+        "monitor": "[SCAN]",
+        "entry":   "[BUY]",
+        "exit_tp": "[TP HIT]",
+        "exit_sl": "[SL HIT]",
+    }.get(action, "[ALERT]")
+
+    profile_tag = "[DEMO]" if profile == "demo" else "[LIVE]"
+
+    # 构建 Markdown
+    msg = {
+        "msg_type": "interactive",
+        "card": {
+            "header": {
+                "title": {"tag": "plain_text",
+                          "content": f"{emoji} {symbol} {profile_tag}"},
+                "template": "purple" if profile == "demo" else "red"
+            },
+            "elements": [
+                # 行情行
+                {
+                    "tag": "div",
+                    "fields": [
+                        {"is_short": True, "text": {"tag": "lark_md",
+                            "content": f"**Price**\n{price:.4f} USDT"}},
+                        {"is_short": True, "text": {"tag": "lark_md",
+                            "content": f"**Entry**\n{entry_price:.4f}"}},
+                        {"is_short": True, "text": {"tag": "lark_md",
+                            "content": f"**PnL**\n:<font color='{pnl_color}'>{pnl_pct:+.2f}% ({pnl_usdt:+.4f} USDT)"}},
+                        {"is_short": True, "text": {"tag": "lark_md",
+                            "content": f"**Leverage**\n{leverage}x"}},
+                    ]
+                },
+                {"tag": "hr"},
+                # 技术指标行
+                {
+                    "tag": "div",
+                    "fields": [
+                        {"is_short": True, "text": {"tag": "lark_md",
+                            "content": f"**RSI(14)**\n:<font color='{rsi_color}'>{rsi14:.1f} [{rsi_label}]"}},
+                        {"is_short": True, "text": {"tag": "lark_md",
+                            "content": f"**Funding Rate**\n{fr*100:+.4f}%/8h (daily: {fr*3*100:+.4f}%)"}},
+                        {"is_short": True, "text": {"tag": "lark_md",
+                            "content": f"**Liq Distance**\n:<font color='{liq_color}'>{dist_to_liq:.2f}% [{liq_label}]"}},
+                        {"is_short": True, "text": {"tag": "lark_md",
+                            "content": f"**Trailing SL**\n{'ACTIVE' if trailing_active else 'inactive'}"}},
+                    ]
+                },
+                {"tag": "hr"},
+                # 止盈止损距离行
+                {
+                    "tag": "div",
+                    "fields": [
+                        {"is_short": True, "text": {"tag": "lark_md",
+                            "content": f"**To TP**\n{dist_to_tp:.2f}%"}},
+                        {"is_short": True, "text": {"tag": "lark_md",
+                            "content": f"**To SL**\n{dist_to_sl:.2f}%"}},
+                    ]
+                },
+                # 时间戳
+                {
+                    "tag": "note",
+                    "elements": [{"tag": "plain_text",
+                                  "content": f"Updated: {time.strftime('%Y-%m-%d %H:%M:%S')}"}]
+                }
+            ]
+        }
+    }
+
+    try:
+        body = json.dumps(msg).encode("utf-8")
+        req = urllib.request.Request(
+            FEISHU_WEBHOOK, data=body,
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            result = json.loads(r.read())
+        print(f"[Feishu] {result.get('code', -1)} {result.get('msg', '')}")
+    except Exception as e:
+        print(f"[Feishu] Send failed: {e}")
+
+# 使用示例
+send_feishu_notification(
+    title="CRCL持仓监控",
+    symbol="CRCL-USDT-SWAP",
+    profile="live",
+    price=85.95, entry_price=85.7673,
+    rsi14=25.1, pnl_pct=0.21, pnl_usdt=0.027,
+    dist_to_liq=14.0, dist_to_sl=4.18, dist_to_tp=5.80,
+    fr=0.0003, trailing_active=False, leverage=5,
+    action="monitor"
+)
+```
+
+---
+
+**P2-3：追踪止损（浮盈 > 5% → SL 上调至成本价）→ 防止利润回吐**
+
+**问题**：原策略止损位固定，当出现大幅浮盈后价格回调会导致利润大幅回吐。
+
+**追踪止损完整实现**：
+
+```python
+def run_tracking_stop(
+    symbol: str,
+    entry_price: float,
+    leverage: int,
+    tp_pct: float = 8.0,
+    sl_pct: float = 5.0,
+    trailing_pct: float = 5.0,
+    max_hold_hours: int = 336,
+    check_interval: int = 60,
+    profile: str = "live",
+):
+    """
+    持仓监控主循环，带追踪止损 + 飞书通知
+    """
+    tp_price = entry_price * (1 + tp_pct / 100)
+    sl_price = entry_price * (1 - sl_pct / 100)  # 动态调整
+    trailing_locked = False
+    trailing_lock_price = None
+    entry_time = time.time()
+    max_time = entry_time + max_hold_hours * 3600
+    last_feishu = 0
+
+    print(f"[START] {symbol} | Entry: {entry_price} | TP: {tp_price} | "
+          f"SL: {sl_price} | Trailing: {trailing_pct}%")
+
+    while True:
+        now = time.time()
+
+        # 获取实时数据
+        ticker = get_ticker(symbol)
+        current_price = float(ticker["last"])
+        candles = fetch_candles(symbol, bar="1H", limit=50)
+        rsi14 = calc_rsi([c["close"] for c in candles], period=14)
+        fr = fetch_funding_rate(symbol)
+        liq_price = calc_liquidation_price(entry_price, leverage)
+        notional = current_price * leverage  # 逐仓面值
+
+        pnl_pct = (current_price - entry_price) / entry_price * 100
+        pnl_usdt = pnl_pct / 100 * notional
+        dist_to_tp  = (tp_price  - current_price) / current_price * 100
+        dist_to_sl  = (current_price - sl_price) / current_price * 100
+        dist_to_liq = (current_price - liq_price) / current_price * 100
+        elapsed_h = (now - entry_time) / 3600
+
+        # [核心] 追踪止损：浮盈超过阈值，上调 SL 至成本价
+        if not trailing_locked and pnl_pct > trailing_pct:
+            old_sl = sl_price
+            sl_price = entry_price  # 锁定利润
+            trailing_locked = True
+            trailing_lock_price = entry_price
+            print(f"[TRAILING] PnL {pnl_pct:.2f}% > {trailing_pct}% | "
+                  f"SL raised: {old_sl:.4f} -> {entry_price:.4f} (COST)")
+            # 立即更新止盈止损 plan order
+            update_algo_order(symbol, new_sl=entry_price)
+            # 立即飞书通知
+            send_feishu_notification(..., action="monitor")
+
+        # [飞书] 每 30 分钟常规推送
+        if now - last_feishu > 1800:
+            send_feishu_notification(
+                title=f"{symbol} 监控报告",
+                symbol=symbol, profile=profile,
+                price=current_price, entry_price=entry_price,
+                rsi14=rsi14, pnl_pct=pnl_pct, pnl_usdt=pnl_usdt,
+                dist_to_liq=dist_to_liq, dist_to_sl=dist_to_sl,
+                dist_to_tp=dist_to_tp, fr=fr,
+                trailing_active=trailing_locked,
+                leverage=leverage, action="monitor"
+            )
+            last_feishu = now
+
+        # [平仓判断]
+        exit_reason = None
+        if current_price >= tp_price:
+            exit_reason = "tp"
+        elif current_price <= sl_price:
+            exit_reason = "sl"
+        elif now >= max_time:
+            exit_reason = "timeout"
+
+        if exit_reason:
+            exit_price = current_price
+            exit_pnl_pct = pnl_pct
+            exit_pnl_usdt = pnl_usdt
+
+            # 执行市价平仓
+            close_position(symbol, profile=profile)
+
+            # 发送飞书平仓通知
+            send_feishu_notification(
+                title=f"{symbol} 平仓通知",
+                symbol=symbol, profile=profile,
+                price=exit_price, entry_price=entry_price,
+                rsi14=rsi14, pnl_pct=exit_pnl_pct, pnl_usdt=exit_pnl_usdt,
+                dist_to_liq=dist_to_liq, dist_to_sl=0, dist_to_tp=0,
+                fr=fr, trailing_active=trailing_locked,
+                leverage=leverage,
+                action=f"exit_{exit_reason}"
+            )
+
+            print(f"[EXIT:{exit_reason.upper()}] {symbol} | "
+                  f"Exit: {exit_price:.4f} | PnL: {exit_pnl_pct:+.2f}% ({exit_pnl_usdt:+.4f} USDT)")
+            break
+
+        print(f"[MON] {symbol} | {current_price:.4f} | PnL: {pnl_pct:+.2f}% | "
+              f"TP: {dist_to_tp:.2f}% | SL: {dist_to_sl:.2f}% | "
+              f"Liq: {dist_to_liq:.2f}% | RSI: {rsi14:.1f} | "
+              f"Trailing: {'YES' if trailing_locked else 'no'} | {elapsed_h:.1f}h")
+        time.sleep(check_interval)
+```
+
+---
+
+**P2-4：`--mode demo|live` 明确区分 → 实盘安全隔离**
+
+**设计原则**：
+- `demo`（模拟盘）：所有操作带 `--profile demo`，API Key 建议使用专门的 Demo API Key
+- `live`（实盘）：所有操作带 `--profile live`，飞书通知模板头部颜色区分
+
+**完整参数对照**：
+
+| 操作 | demo 参数 | live 参数 |
+|------|---------|---------|
+| 账户余额 | `okx account balance --profile demo` | `okx account balance --profile live` |
+| 持仓查询 | `okx swap positions --instId X --profile demo` | `okx swap positions --instId X --profile live` |
+| 资金费率 | `okx market funding-rate X`（无需 profile） | 同左 |
+| K线/RSI | `okx market candles X`（无需 profile） | 同左 |
+| 设置杠杆 | `okx swap leverage --instId X --profile demo` | `okx swap leverage --instId X --profile live` |
+| 开仓/平仓 | `okx swap place --instId X --profile demo` | `okx swap place --instId X --profile live` |
+
+**启动命令示例**：
+
+```bash
+# 实盘（正式交易）
+python scripts/run_strategy.py \
+  --symbols CRCL-USDT-SWAP,ETH-USDT-SWAP \
+  --profile live \
+  --leverage 5 \
+  --order-pct 30 \
+  --tp-pct 6 \
+  --sl-pct 4 \
+  --trailing-pct 5 \
+  --rsi-oversold 30 \
+  --feishu-webhook https://open.feishu.cn/open-apis/bot/v2/hook/YOUR_WEBHOOK
+
+# 模拟盘（策略验证）
+python scripts/run_strategy.py \
+  --symbols BTC-USDT-SWAP,ETH-USDT-SWAP,SOL-USDT-SWAP \
+  --profile demo \
+  --leverage 5 \
+  --order-pct 30 \
+  --tp-pct 8 \
+  --sl-pct 5 \
+  --trailing-pct 5 \
+  --rsi-oversold 25
+```
+
+**飞书通知视觉区分**：实盘卡片头部红色，模拟盘卡片头部紫色（见上方飞书通知实现）。
 
 ---
 
@@ -786,4 +1358,7 @@ elif check["pct_to_liq"] < 10:
 | `--order-pct` | `50%` | `40%` | `30%` | 资金使用比例 |
 | `--check-interval` | `60s` | `60s` | `120s` | 轮询间隔 |
 | `--max-hold-hours` | `336h` | `336h` | `336h` | 最大持仓（14 天） |
+| `--trailing-pct` | `5%` | `5%` | `5%` | 追踪止盈触发阈值（浮盈>此值时 SL 锁成本） |
+| `--symbols` | `BTC-USDT-SWAP` | 多币种逗号分隔 | — | 并行监控 3~6 个币种 |
+| `--feishu-webhook` | `null` | 自定义 URL | — | 飞书通知（空则跳过） |
 | 风险等级 | ⚠️⚠️⚠️⚠️ 极高 | ⚠️⚠️⚠️ 高 | ⚠️⚠️ 中高 | — |

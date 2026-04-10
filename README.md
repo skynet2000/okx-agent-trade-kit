@@ -1,17 +1,20 @@
 # OKX Agent Trade Kit
 
-> RSI 激进抄底策略 — OKX 永续合约自动化交易 Skill
+> RSI 激进抄底策略 — OKX 永续合约自动化交易 Skill v1.2
 
 ## 功能概述
 
-基于 RSI(14) 超卖信号的 OKX 永续合约自动交易机器人。
+基于 RSI(14) 超卖信号的 OKX 永续合约自动交易机器人（v1.2）。
 
 - **触发逻辑**：RSI(14) < 超卖阈值 → 市价买入开多
 - **止盈逻辑**：价格上涨 +{tp-pct}% → 市价止盈卖出
 - **止损逻辑**：价格下跌 -{sl-pct}% → 市价止损卖出
+- **追踪止损**：浮盈 > 5% 时自动上调 SL 至成本价（锁定利润）
 - **合约杠杆**：5x ~ 8x 可调
 - **交易模式**：永续合约（swap）或现货（spot）
 - **账户模式**：模拟盘（demo）/ 实盘（live）
+- **多币种**：支持 3~6 个币种并行监控
+- **飞书通知**：实时推送 RSI、强平价、资金费率、浮盈/浮亏
 
 ## 快速开始
 
@@ -92,12 +95,14 @@ Phase 4: 平仓离场 → 止盈/止损/超时强制平仓
 
 ```
 okx-agent-trade-kit/
-├── SKILL.md                   # 完整策略文档（含 Phase 0~4 执行流程）
+├── SKILL.md                   # 完整策略文档（v1.2，含 Phase 0~4 + P0/P1/P2）
 ├── README.md                  # 本文件
 ├── docs/
-│   └── backtest_report_v1.1.md   # 回测报告（CRCL/USDT-SWAP 14天，v1.1）
+│   └── backtest_report_v1.2.md   # 回测报告（v1.2，含 P0/P1/P2 改进清单）
 └── scripts/
-    └── backtest_rsi_swap.py   # 回测脚本（直接调 OKX API）
+    ├── backtest_rsi_swap.py   # 回测脚本
+    ├── multi_coin_scanner.py   # 多币种 RSI 扫描器 (P2-1)
+    └── review_position.py      # 持仓回顾脚本 (P2-2/P2-3)
 ```
 
 ## 回测报告
@@ -105,13 +110,14 @@ okx-agent-trade-kit/
 详细回测结果见 [docs/backtest_report_v1.1.md](docs/backtest_report_v1.1.md)，包含：
 - 三种策略参数对比（激进/保守/精准激进）
 - 4 笔交易明细
-- SKILL P0/P1 改进清单（含具体代码实现）
+- **P0/P1 改进**：indicator CLI 限制、bar 格式对照表、小币过滤、资金费率风控、强平价预警
+- **P2 改进**：多币种并行、飞书通知增强（RSI/强平/PnL）、追踪止损（>5% SL 锁成本）、demo/live 明确区分
 
-### 运行回测
+## 版本历史
 
-```bash
-python scripts/backtest_rsi_swap.py
-```
+- **v1.2** — P2 体验增强：多币种扫描 + 飞书通知 + 追踪止损 + demo/live
+- **v1.1** — P0/P1 修复：indicator CLI 限制 + bar 格式对照 + 资金费率 + 强平价预警
+- **v1.0** — 初始版本：RSI 超卖信号 + Phase 0~4 基础框架
 
 ## License
 
