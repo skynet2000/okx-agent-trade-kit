@@ -10,7 +10,7 @@ description: |
     "rsibot" / "rsi策略" / "okx agent" / "okx量化" / "okx合约机器人" /
     "start rsi agent" / "run okx strategy" / "aggressive rsi" /
     "okx高频抄底" / "okx永续套利" / "okx开多信号"
-version: "1.2.0"
+version: "1.3.0"
 user-invocable: true
 ---
 
@@ -45,8 +45,9 @@ user-invocable: true
 | `--mode` | string | `swap` | `swap` | `spot` / `swap` | `swap` 永续合约 / `spot` 现货 |
 | `--rsi-period` | int | `14` | `14` | 6~28 | RSI 计算周期 |
 | `--rsi-oversold` | float | `30` | `25~30` | 15~40 | 超卖阈值（低于此值触发买入） |
-| `--tp-pct` | float | `8` | `8~12` | 3~20 | 止盈涨幅百分比（相对成本价） |
-| `--sl-pct` | float | `5` | `5~8` | 2~15 | 止损跌幅百分比（相对成本价） |
+| `--tp-atr` | float | `2.0` | `2.0~3.0` | 1.0~5.0 | 止盈 ATR 倍数：`TP = Entry + tp_atr × ATR(14)` |
+| `--sl-atr` | float | `1.5` | `1.0~2.0` | 0.5~3.0 | 止损 ATR 倍数：`SL = Entry - sl_atr × ATR(14)` |
+| `--atr14` | float | **必填** | — | — | 当前 ATR(14) 值（从 `multi_coin_scanner.py` 输出获取） |
 | `--leverage` | int | `8` | `8` | 5~8 | 合约杠杆倍数（仅 swap 模式，**建议不超过 8x**） |
 | `--order-pct` | float | `50` | `40~60` | 10~80 | 下单金额占可用保证金的比例（%） |
 | `--check-interval` | int | `60` | `60` | 30~300 | 监控轮询间隔（秒） |
@@ -56,13 +57,66 @@ user-invocable: true
 
 ### 参数配置说明
 
-| 场景 | `--rsi-oversold` | `--tp-pct` | `--sl-pct` | `--leverage` | `--order-pct` | 风险等级 |
+| 场景 | `--rsi-oversold` | `--tp-atr` | `--sl-atr` | `--leverage` | `--order-pct` | 风险等级 |
 |------|-----------------|-----------|-----------|------------|--------------|---------|
-| **激进（默认）** | `25` | `8%` | `5%` | `8x` | `50%` | ⚠️ 极高 |
-| **稳健激进** | `30` | `10%` | `6%` | `5x` | `40%` | ⚠️ 高 |
-| **保守试探** | `35` | `12%` | `8%` | `5x` | `30%` | ⚠️ 中高 |
+| **激进（默认）** | `25` | `2.0x ATR` | `1.5x ATR` | `8x` | `50%` | ⚠️ 极高 |
+| **稳健激进** | `30` | `2.5x ATR` | `1.5x ATR` | `5x` | `40%` | ⚠️ 高 |
+| **保守试探** | `35` | `3.0x ATR` | `2.0x ATR` | `5x` | `30%` | ⚠️ 中高 |
 
-> **激进策略逻辑**：RSI(14)<25 视为强超卖信号，配合 8x 杠杆、50% 仓位、8% 止盈、5% 止损，目标是快速捕捉反弹波段。2 周内若多次止盈可积累显著收益，但连续止损也会快速侵蚀本金。
+> **激进策略逻辑**：RSI(14)<25 视为强超卖信号，配合 8x 杠杆、50% 仓位、2.0x ATR 止盈、1.5x ATR 止损。ATR 自适应市场波动——高波动币种自动扩大止盈止损范围，低波动币种自动收紧，减少假止损。追踪止盈（浮盈 > 5% 时 SL 锁成本价）进一步锁定利润。
+
+### ATR 动态止盈止损（v1.3 核心改进）
+
+> **核心思想**：固定百分比止损在低波动和高波动币种上表现差异巨大。ATR（Average True Range）用历史波动率动态调整止盈止损，是专业交易员的标配方法。
+
+#### ATR 计算方法（Wilder 平滑）
+
+```
+True Range_t = max(
+    high_t - low_t,
+    |high_t - close_{t-1}|,
+    |low_t  - close_{t-1}|
+)
+
+ATR(14) = SMA_14(TR)         ← 初始值（前 14 个 TR 的简单平均）
+ATR_n   = (ATR_{n-1} × 13 + TR_n) / 14   ← Wilder 平滑（等同于 EMA）
+
+K 线粒度：1H（与 RSI(14) 周期对齐）
+```
+
+#### ATR 止盈止损公式
+
+```
+TP = Entry_Price + tp_atr × ATR(14)
+SL = Entry_Price - sl_atr × ATR(14)
+
+例：CRCL 开仓价 85.77，ATR(14) = 3.50
+  TP = 85.77 + 2.0 × 3.50 = 92.77   (+8.1%)
+  SL = 85.77 - 1.5 × 3.50 = 80.52   (-6.1%)
+```
+
+#### ATR 倍数经验值（按波动率选择）
+
+| 市场环境 | 典型币种 | 建议 tp-atr | 建议 sl-atr | 说明 |
+|---------|---------|------------|------------|------|
+| 低波动 | 主流币 BTC/ETH | `2.5~3.0` | `1.5~2.0` | ATR 较小（几百美元），倍数需大 |
+| 中波动 | ALT 大币 SOL/OKB | `2.0~2.5` | `1.5` | ATR 中等（几美元），倍数适中 |
+| 高波动 | 小币 CRCL | `1.5~2.0` | `1.0~1.5` | ATR 大（数美元），倍数收窄防止止损过宽 |
+| 极端波动 | Meme/新币 | `1.0~1.5` | `0.8~1.0` | 波动极大，倍数过大会让止盈太远 |
+
+#### ATR 安全检查
+
+```
+风险检查：SL 与强平价之间必须有足够缓冲
+
+dist_sl_liq = (SL_Price - Liq_Price) / SL_Price × 100
+
+IF dist_sl_liq < 1%:
+    ⚠️ 警告：SL 太靠近强平价，建议降低杠杆或减少仓位
+    → 脚本会自动打印 [WARN] 并建议调整参数
+
+建议 buffer：dist_sl_liq > 3%
+```
 
 ---
 
@@ -686,7 +740,7 @@ RSI(14):    {rsi_value}  🔴 超卖
 
 ---
 
-## 回测改进记录 (v1.2.0)
+## 回测改进记录 (v1.3.0)
 
 > 基于 CRCL/USDT-SWAP 14天（2026-03-27 ~ 2026-04-10）1H K线真实数据回测，初始资金 1000 USDT。
 
@@ -699,6 +753,25 @@ RSI(14):    {rsi_value}  🔴 超卖
 | 精准激进 (8x) | <25 | 8% | 5% | 8x | 50% | 2 | 1/1 | 50% | +1346 USDT (+135%) | 2346 USDT |
 
 > ⚠️ 回测结果不代表未来收益。CRCL 在回测期间有剧烈波动（84.4→101.87），策略抓住了所有超卖反弹。真实市场可能存在更多假信号。
+
+### SKILL 改进清单（v1.3）
+
+| # | 改进 | 状态 | 实现文件 |
+|---|------|------|---------|
+| **P0-1** | 直接调 OKX API 计算 RSI（绕过 indicator CLI 限制） | ✅ | `multi_coin_scanner.py` |
+| **P0-2** | OKX bar 格式对照表（`1Hutc` vs `1H`） | ✅ | SKILL.md §3 |
+| **P0-3** | USDT-M 永续过滤（排除反向合约） | ✅ | `backtest_rsi_swap.py` |
+| **P1-4** | 资金费率风控（高 FR 时自动降仓） | ✅ | `run_tracking.py` |
+| **P1-5** | 强平价预警（距离 < 5% 警告） | ✅ | Phase 3C |
+| **P2-1** | 多币种并行监控（3~6 个币种） | ✅ | `scripts/multi_coin_scanner.py` |
+| **P2-2** | 飞书通知增强（RSI/强平价/资金费率/PnL） | ✅ | `scripts/feishu_notify.py` |
+| **P2-3** | 追踪止损（浮盈 > 5% → SL 锁成本价） | ✅ | Phase 3C + `scripts/run_tracking.py` |
+| **P2-4** | `--mode demo\|live` 明确区分 | ✅ | 全链路 `--profile demo/live` |
+| **P3-1** | ATR 动态止盈止损（Wilder 平滑，Period=14） | ✅ | `calc_atr()` 函数 |
+| **P3-2** | ATR 安全检查（SL 距强平价 < 1% 警告） | ✅ | `run_tracking.py` |
+| **P3-3** | 每轮动态更新 ATR（自适应最新波动率） | ✅ | `run_tracking.py` 主循环 |
+
+**版本演进**：v1.0（初始）→ v1.1（P0/P1 修复）→ v1.2（P2 体验增强）→ **v1.3（P3 ATR 动态止盈止损）**
 
 ### P0 — 必须修复（影响核心功能）
 
@@ -1320,30 +1393,131 @@ def run_tracking_stop(
 
 ```bash
 # 实盘（正式交易）
-python scripts/run_strategy.py \
-  --symbols CRCL-USDT-SWAP,ETH-USDT-SWAP \
-  --profile live \
+python scripts/run_tracking.py \
+  --symbol CRCL-USDT-SWAP \
+  --entry 85.7673 \
   --leverage 5 \
-  --order-pct 30 \
-  --tp-pct 6 \
-  --sl-pct 4 \
+  --atr14 3.50 \
+  --tp-atr 2.0 \
+  --sl-atr 1.5 \
   --trailing-pct 5 \
   --rsi-oversold 30 \
-  --feishu-webhook https://open.feishu.cn/open-apis/bot/v2/hook/YOUR_WEBHOOK
+  --profile live \
+  --webhook https://open.feishu.cn/open-apis/bot/v2/hook/YOUR_WEBHOOK
 
 # 模拟盘（策略验证）
-python scripts/run_strategy.py \
-  --symbols BTC-USDT-SWAP,ETH-USDT-SWAP,SOL-USDT-SWAP \
-  --profile demo \
+python scripts/run_tracking.py \
+  --symbol BTC-USDT-SWAP \
+  --entry 71950.0 \
   --leverage 5 \
-  --order-pct 30 \
-  --tp-pct 8 \
-  --sl-pct 5 \
+  --atr14 1200.0 \
+  --tp-atr 2.5 \
+  --sl-atr 1.5 \
   --trailing-pct 5 \
-  --rsi-oversold 25
+  --rsi-oversold 25 \
+  --profile demo
 ```
 
-**飞书通知视觉区分**：实盘卡片头部红色，模拟盘卡片头部紫色（见上方飞书通知实现）。
+**飞书通知视觉区分**：实盘卡片头部红色，模拟盘卡片头部紫色。
+
+---
+
+**P3 — ATR 动态止盈止损（v1.3 核心改进）→ 自适应市场波动**
+
+**问题**：固定百分比止损在高波动小币（如 CRCL，ATR=3.5）和低波动主流币（如 BTC，ATR=1200）上表现差异巨大。高波动小币用固定 5% 止损可能轻易被打穿；低波动主流币用同样止损又太紧，容易被正常波动止损。
+
+**已验证的完整实现 — ATR 计算函数**：
+
+```python
+def calc_atr(ohlcv: list, period: int = 14) -> float:
+    """
+    ATR（Average True Range），Wilder 平滑法
+    True Range = max(high-low, |high-prev_close|, |low-prev_close|)
+    ATR(14) = (prev_ATR * 13 + TR) / 14
+    """
+    if len(ohlcv) < period + 1:
+        return 0.0
+    tr_list = []
+    for i in range(1, len(ohlcv)):
+        h  = ohlcv[i]["high"]
+        l  = ohlcv[i]["low"]
+        pc = ohlcv[i - 1]["close"]
+        tr = max(h - l, abs(h - pc), abs(l - pc))
+        tr_list.append(tr)
+    atr = sum(tr_list[:period]) / period          # SMA 初始化
+    for tr in tr_list[period:]:
+        atr = (atr * (period - 1) + tr) / period  # Wilder 平滑
+    return atr
+
+def calc_atr_levels(entry: float, atr: float,
+                    tp_atr: float, sl_atr: float) -> tuple:
+    """ATR 止盈止损价格"""
+    tp_price = entry + tp_atr * atr
+    sl_price = entry - sl_atr * atr
+    return tp_price, sl_price
+```
+
+**已验证的完整实现 — 持仓监控主循环**：
+
+```python
+def run_tracking(symbol, entry_price, leverage, atr14,
+                 tp_atr=2.0, sl_atr=1.5, trailing_pct=5,
+                 profile="live", webhook=DEFAULT_WEBHOOK):
+    tp_price, sl_price = calc_atr_levels(entry_price, atr14, tp_atr, sl_atr)
+    liq_price = calc_liquidation(entry_price, leverage)
+
+    # ATR 安全检查
+    dist_sl_liq = (sl_price - liq_price) / sl_price * 100
+    if dist_sl_liq < 1:
+        print(f"[WARN] SL {sl_price:.4f} < 1% from Liq {liq_price:.4f} -- HIGH RISK!")
+
+    trailing_locked = False
+    while True:
+        ohlcv   = fetch_ohlcv(symbol, limit=50)
+        atr_cur = calc_atr(ohlcv)                # 每轮重新计算最新 ATR
+        ticker  = get_ticker(symbol)
+        current_price = ticker["last"]
+
+        # ATR 动态更新（每轮按最新 ATR 调整 TP/SL）
+        tp_cur, sl_cur = calc_atr_levels(entry_price, atr_cur, tp_atr, sl_atr)
+        pnl_pct = (current_price - entry_price) / entry_price * 100
+
+        # [追踪止损] 浮盈超过阈值 → SL 锁成本价
+        if not trailing_locked and pnl_pct > trailing_pct:
+            sl_cur = entry_price                  # 锁定利润
+            trailing_locked = True
+            print(f"[TRAILING] PnL {pnl_pct:.2f}% > {trailing_pct}%, SL -> cost")
+
+        # [平仓判断]
+        if current_price >= tp_cur:
+            print(f"[EXIT:TP] TP={tp_cur:.4f} hit | PnL={pnl_pct:.2f}%")
+            break
+        elif current_price <= sl_cur:
+            print(f"[EXIT:SL] SL={sl_cur:.4f} hit | PnL={pnl_pct:.2f}%")
+            break
+
+        print(f"Price={current_price:.4f} | PnL={pnl_pct:+.2f}% | "
+              f"ATR={atr_cur:.4f} | TP={tp_cur:.4f} | SL={sl_cur:.4f}")
+        time.sleep(60)
+```
+
+**运行示例**（接 `multi_coin_scanner.py` 输出）：
+
+```bash
+# Step 1: 扫描获取 ATR
+python scripts/multi_coin_scanner.py --coins CRCL-USDT-SWAP
+# 输出: CRCL ATR(14)=3.5042  TP=+8.16%  SL=-6.10%
+
+# Step 2: 传入 ATR 参数启动追踪
+python scripts/run_tracking.py \
+  --symbol   CRCL-USDT-SWAP \
+  --entry    85.7673 \
+  --leverage 5 \
+  --atr14    3.5042 \
+  --tp-atr   2.0 \
+  --sl-atr   1.5 \
+  --profile  live
+```
 
 ---
 

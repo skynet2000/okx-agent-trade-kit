@@ -1,10 +1,10 @@
 # OKX Agent Trade Kit
 
-> RSI 激进抄底策略 — OKX 永续合约自动化交易 Skill v1.2
+> RSI 激进抄底策略 — OKX 永续合约自动化交易 Skill **v1.3**
 
 ## 功能概述
 
-基于 RSI(14) 超卖信号的 OKX 永续合约自动交易机器人（v1.2）。
+基于 RSI(14) 超卖信号的 OKX 永续合约自动交易机器人（v1.3）。
 
 - **触发逻辑**：RSI(14) < 超卖阈值 → 市价买入开多
 - **止盈逻辑**：价格上涨 +{tp-pct}% → 市价止盈卖出
@@ -54,8 +54,8 @@
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `--rsi-oversold` | `25` | 超卖阈值（低于此值触发买入） |
-| `--tp-pct` | `8%` | 止盈涨幅百分比 |
-| `--sl-pct` | `5%` | 止损跌幅百分比 |
+| `--tp-atr` | `2.0x ATR` | 止盈 ATR 倍数：`TP = Entry + tp_atr × ATR(14)` |
+| `--sl-atr` | `1.5x ATR` | 止损 ATR 倍数：`SL = Entry - sl_atr × ATR(14)` |
 | `--leverage` | `8x` | 合约杠杆（5x~8x） |
 | `--order-pct` | `50%` | 单笔仓位占保证金比例 |
 | `--check-interval` | `60s` | 信号轮询间隔 |
@@ -95,14 +95,15 @@ Phase 4: 平仓离场 → 止盈/止损/超时强制平仓
 
 ```
 okx-agent-trade-kit/
-├── SKILL.md                   # 完整策略文档（v1.2，含 Phase 0~4 + P0/P1/P2）
+├── SKILL.md                   # 完整策略文档（v1.3，含 Phase 0~4 + P0/P1/P2/P3）
 ├── README.md                  # 本文件
 ├── docs/
-│   └── backtest_report_v1.2.md   # 回测报告（v1.2，含 P0/P1/P2 改进清单）
+│   └── backtest_report_v1.1.md   # 回测报告（v1.1）
 └── scripts/
     ├── backtest_rsi_swap.py   # 回测脚本
-    ├── multi_coin_scanner.py   # 多币种 RSI 扫描器 (P2-1)
-    └── review_position.py      # 持仓回顾脚本 (P2-2/P2-3)
+    ├── multi_coin_scanner.py   # 多币种 RSI+ATR 扫描器 (P2-1, P3-1)
+    ├── feishu_notify.py         # 飞书通知模块 (P2-2, P3)
+    └── run_tracking.py          # ATR 动态止盈止损 + 追踪止损 (P2-3, P3)
 ```
 
 ## 回测报告
@@ -112,9 +113,11 @@ okx-agent-trade-kit/
 - 4 笔交易明细
 - **P0/P1 改进**：indicator CLI 限制、bar 格式对照表、小币过滤、资金费率风控、强平价预警
 - **P2 改进**：多币种并行、飞书通知增强（RSI/强平/PnL）、追踪止损（>5% SL 锁成本）、demo/live 明确区分
+- **P3 改进**：ATR 动态止盈止损（Wilder 平滑）、ATR 安全检查、每轮动态更新 ATR
 
 ## 版本历史
 
+- **v1.3** — P3 ATR 动态止盈止损：Wilder 平滑 ATR(14)、动态 TP/SL 自适应波动、ATR 安全检查
 - **v1.2** — P2 体验增强：多币种扫描 + 飞书通知 + 追踪止损 + demo/live
 - **v1.1** — P0/P1 修复：indicator CLI 限制 + bar 格式对照 + 资金费率 + 强平价预警
 - **v1.0** — 初始版本：RSI 超卖信号 + Phase 0~4 基础框架
