@@ -1,7 +1,10 @@
 # OKX Auto Scan & Trade Script
-$env:OKX_API_KEY = "965f3977-59e7-47fc-bc19-75abb7caa424"
-$env:OKX_SECRET_KEY = "37D24B51600BD291E9EFF3D58963A87E"
-$env:OKX_PASSPHRASE = "@102415Mjh"
+# API 密钥从环境变量读取，或通过 okx config init 配置
+if (-not $env:OKX_API_KEY -or -not $env:OKX_SECRET_KEY -or -not $env:OKX_PASSPHRASE) {
+    Write-Host "ERROR: 请设置环境变量 OKX_API_KEY, OKX_SECRET_KEY, OKX_PASSPHRASE"
+    Write-Host "  或运行 okx config init 后重新加载环境变量"
+    exit 1
+}
 
 $RSI_PERIOD = 14
 $RSI_THRESHOLD = 25

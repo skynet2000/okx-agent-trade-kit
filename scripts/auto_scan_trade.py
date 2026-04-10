@@ -6,9 +6,9 @@ OKX Agent Trade Kit - 市场扫描脚本
 import json, time, urllib.request, hmac, hashlib, base64, sys
 
 # ============ 配置 ============
-API_KEY    = "965f3977-59e7-47fc-bc19-75abb7caa424"
-SECRET_KEY = "37D24B51600BD291E9EFF3D58963A87E"
-PASSPHRASE = "@102415Mjh"
+API_KEY    = os.environ.get("OKX_API_KEY", "")
+SECRET_KEY = os.environ.get("OKX_SECRET_KEY", "")
+PASSPHRASE = os.environ.get("OKX_PASSPHRASE", "")
 BASE_URL   = "https://www.okx.com"
 
 RSI_PERIOD     = 14
