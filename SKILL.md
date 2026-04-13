@@ -1,23 +1,28 @@
 ---
-name: okx-agent-trade-kit
+name: agent-trade-kit
 description: |
-  OKX Agent Trade Kit — RSI 激进抄底策略。
+  Agent Trade Kit — RSI 激进抄底策略（第三方，非 OKX 官方）。
   当 RSI(14) 低于超卖阈值时自动市价买入永续合约（5x~8x 杠杆），价格反弹至止盈位自动止盈，跌破止损位自动止损。
   现货和合约模式分开，支持模拟盘 (demo) / 实盘 (live)。
+  通过 OKX CLI 访问交易所 API。
 
   触发关键词（任一触发）：
-    "rsi激进" / "rsi抄底" / "okx自动交易" / "okx永续" / "okx swap" /
-    "rsibot" / "rsi策略" / "okx agent" / "okx量化" / "okx合约机器人" /
-    "start rsi agent" / "run okx strategy" / "aggressive rsi" /
-    "okx高频抄底" / "okx永续套利" / "okx开多信号"
-version: "1.3.0"
+    "rsi激进" / "rsi抄底" / "永续合约" / "swap交易" /
+    "rsibot" / "rsi策略" / "agent交易" / "量化机器人" / "合约机器人" /
+    "start rsi agent" / "run strategy" / "aggressive rsi"
+version: "1.4.0"
 user-invocable: true
+metadata:
+  author: skynet2000
+  homepage: "https://github.com/skynet2000/agent-trade-kit"
+  disclaimer: "本工具为第三方社区作品，与 OKX 官方无关。飞书/钉钉等通知渠道 Webhook 地址须由用户自行在运行时配置。"
 ---
 
-# OKX Agent Trade Kit — RSI 激进抄底策略
+# Agent Trade Kit — RSI 激进抄底策略（第三方 · 非 OKX 官方）
 
 > **策略定位**：激进 RSI 抄底，专为 2 周内获取高收益设计。使用 5x~8x 杠杆，追踪超卖反弹机会。
 > **⚠️ 高风险警告**：本策略使用高杠杆合约交易，存在快速亏损甚至爆仓风险。请充分了解风险后再使用。
+> **⚠️ 第三方声明**：本工具为第三方社区作品，**不代表 OKX 官方立场或产品**，仅通过 OKX CLI 访问 OKX 交易所 API。
 
 ---
 
@@ -659,7 +664,7 @@ Phase 4:
 
 ```
 ╔═══════════════════════════════════════════════════╗
-║  🤖 OKX Agent Trade Kit v1.0.0 — RSI 激进抄底     ║
+║  🤖 Agent Trade Kit v1.4.0 — RSI 激进抄底（第三方）║
 ╠═══════════════════════════════════════════════════╣
 ║  标的:       {symbol}                             ║
 ║  模式:       {mode}                               ║
@@ -1106,7 +1111,7 @@ python scripts/multi_coin_scanner.py --coins BTC-USDT-SWAP,ETH-USDT-SWAP,SOL-USD
 ```python
 import urllib.request, json, time
 
-FEISHU_WEBHOOK = "https://open.feishu.cn/open-apis/bot/v2/hook/b2aefdfe-a15d-481a-885b-5b5bb91d4be4"
+FEISHU_WEBHOOK = os.environ.get("FEISHU_WEBHOOK", "")  # 必须通过环境变量传入
 
 def send_feishu_notification(
     title: str,

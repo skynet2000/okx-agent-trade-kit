@@ -5,11 +5,12 @@ feishu_notify.py — 飞书通知模块（含 ATR 动态止盈止损）
 
 v1.3 新增：ATR(14)、动态 TP/SL 价格（基于 ATR 倍数）、ATR 波动率
 """
+import os
 import urllib.request, json
 from datetime import datetime
 
-# 唯一正确 webhook（2026-04-03 用户确认）
-DEFAULT_WEBHOOK = "https://open.feishu.cn/open-apis/bot/v2/hook/b2aefdfe-a15d-481a-885b-5b5bb91d4be4"
+# 通过环境变量传入 webhook 地址，严禁硬编码
+DEFAULT_WEBHOOK = os.environ.get("FEISHU_WEBHOOK", "")
 
 
 def send_trade_notification(

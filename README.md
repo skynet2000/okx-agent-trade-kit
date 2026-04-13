@@ -1,12 +1,14 @@
-# OKX Agent Trade Kit
+# Agent Trade Kit
 
-> RSI 激进抄底策略 + 技术分析引擎 — OKX 永续合约自动化交易 Skill **v1.3**
+> RSI 激进抄底策略 + 技术分析引擎 — 永续合约自动化交易 Skill **v1.4**
+>
+> ⚠️ **第三方声明**：本工具为第三方社区作品，**与 OKX 官方无关**，仅供学习研究。
 
 ## 功能概述
 
-### 交易机器人（okx-agent-trade-kit）
+### 交易机器人（agent-trade-kit）
 
-基于 RSI(14) 超卖信号的 OKX 永续合约自动交易机器人（v1.3）。
+基于 RSI(14) 超卖信号的永续合约自动交易机器人（v1.4），通过 OKX CLI 访问交易所 API。
 
 - **触发逻辑**：RSI(14) < 超卖阈值 → 市价买入开多
 - **止盈逻辑**：价格上涨 +{tp-pct}% → 市价止盈卖出
@@ -129,8 +131,8 @@ Phase 4: 平仓离场 → 止盈/止损/超时强制平仓
 ## 文件结构
 
 ```
-okx-agent-trade-kit/
-├── SKILL.md                        # 交易策略文档（v1.3，含 Phase 0~4 + P0/P1/P2/P3）
+agent-trade-kit/
+├── SKILL.md                        # 交易策略文档（v1.4，含 Phase 0~4 + P0/P1/P2/P3）
 ├── README.md                       # 本文件
 ├── kline-indicator/                # 技术分析引擎 Skill
 │   ├── SKILL.md                    # 技术分析引擎策略文档

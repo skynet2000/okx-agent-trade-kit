@@ -11,11 +11,11 @@ run_tracking.py — ATR 动态止盈止损 + 追踪止损 持仓监控主脚本
   4. 关键指标：RSI、ATR、强平价距离、资金费率、浮盈/浮亏
   5. 支持 demo/live 模式
 """
-import argparse, urllib.request, json, time, sys
+import argparse, os, urllib.request, json, time, sys
 from datetime import datetime
 
 BASE = "https://www.okx.com"
-DEFAULT_WEBHOOK = "https://open.feishu.cn/open-apis/bot/v2/hook/b2aefdfe-a15d-481a-885b-5b5bb91d4be4"
+DEFAULT_WEBHOOK = os.environ.get("FEISHU_WEBHOOK", "")  # 通过环境变量传入
 
 # ── 数据获取 ──────────────────────────────────────────────────────────────────
 
